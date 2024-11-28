@@ -1,0 +1,546 @@
+---
+title: "Housing stock loss estimation"
+author: "Arvin Hadlos"
+date: "2024-04-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r Step 1 - Identify hypothetical and baseline building stock distribution}
+
+install.packages("partitions")
+library(partitions)
+
+# Identify building stock distribution in percentage
+# Get 6 elements that sum up to 1
+z <- compositions(n = 20, m = 6, include.zero = FALSE)
+
+# Convert partition to matrix
+z <- as.matrix.partition(z)
+
+# Transpose matrix
+z <- t(z)
+
+# Multiply by 0.05 so that elements take any value from 0 to 1 by incremental step of 0.05
+z <- z * 0.05
+distrib.percent <- data.frame(z)
+colnames(distrib.percent) <- c("LWA", "LWB", "SCA", "SCB", "RCA", "RCB")
+
+# Identify household count without rounding off
+# Multiply the percentages of distribution with the total number of households (971 households)
+distrib.count <- data.frame(z*971)
+colnames(distrib.count) <- c("LWA", "LWB", "SCA", "SCB", "RCA", "RCB")
+
+#Round off values, making sure each row sums up to 971.
+smart.round <- function(x) {
+  y <- floor(x)
+  indices <- tail(order(x-y), round(sum(x)) - sum(y))
+  y[indices] <- y[indices] + 1
+  y
+}
+
+final.distrib <- data.frame(t(apply(distrib.count, 1, smart.round)))
+colnames(final.distrib) <- c("LWA", "LWB", "SCA", "SCB", "RCA", "RCB")
+
+```
+
+
+```{r Step 2.1 - Determine direct loss for a hazard - PEIS VII}
+
+# Calculate losses for PEIS VII at 95th percentile of the resulting distribution.
+
+install.packages("triangle")
+library(triangle)
+
+function.LWA <- function() {
+  n_sim <- 10000
+  LWA.cost <- rtriangle(n_sim, a = 0.9*8407.29, b = 1.1*8407.29, c = 8407.29) 
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  LWA.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim) 
+  LWA.loss <- rtriangle (n_sim, a = 0.0890, b = 0.6655, c = 0.3212) 
+  LWA.cost*LWA.area*LWA.loss
+}
+
+function.LWB <- function() {
+  n_sim <- 10000
+  LWB.cost <- rtriangle(n_sim, a = 0.9*10328.43, b = 1.1*10328.43, c = 10328.43)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  LWB.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  LWB.loss <- rtriangle(n_sim, a = 0.0423, b = 0.5572, c = 0.2038)
+  LWB.cost*LWB.area*LWB.loss
+}
+
+function.SCA <- function() {
+  n_sim <- 10000
+  SCA.cost <- rtriangle(n_sim, a = 0.9*12055.57, b = 1.1*12055.57, c = 12055.57)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  SCA.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  SCA.loss <- rtriangle(n_sim, a = 0.0453, b = 0.5665, c = 0.2136)
+  SCA.cost*SCA.area*SCA.loss
+}
+
+function.SCB <- function() {
+  n_sim <- 10000
+  SCB.cost <- rtriangle(n_sim, a = 0.9*17935.86, b = 1.1*17935.86, c = 17935.86)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  SCB.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  SCB.loss <- rtriangle(n_sim, a = 0.0645, b = 0.6361, c = 0.2791)
+  SCB.cost*SCB.area*SCB.loss
+}
+
+function.RCA <- function() {
+  n_sim <- 10000
+  RCA.cost <- rtriangle(n_sim, a = 0.9*19363.57, b = 1.1*19363.57, c = 19363.57)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  RCA.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  RCA.loss <- rtriangle(n_sim, a = 0.0263, b = 0.5009, c = 0.1537)
+  RCA.cost*RCA.area*RCA.loss
+}
+
+function.RCB <- function() {
+  n_sim <- 10000
+  RCB.cost <- rtriangle(n_sim, a = 0.9*25182.71, b = 1.1*25182.71, c = 25182.71)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  RCB.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  RCB.loss <- rtriangle(n_sim, a = 0.0583, b = 0.6078, c = 0.2519)
+  RCB.cost*RCB.area*RCB.loss
+}
+
+# Function to calculate the direct loss and return the 95th percentile
+calculate_percentile <- function(row) {
+  set.seed(1) # for comparability across scenarios
+  direct.loss <- (rowSums(replicate(n=row["LWA"], function.LWA()))) +
+                 (rowSums(replicate(n=row["LWB"], function.LWB()))) +
+                 (rowSums(replicate(n=row["SCA"], function.SCA()))) +
+                 (rowSums(replicate(n=row["SCB"], function.SCB()))) +
+                 (rowSums(replicate(n=row["RCA"], function.RCA()))) +
+                 (rowSums(replicate(n=row["RCB"], function.RCB())))
+  quantile(direct.loss, probs = 0.95) # Specify 95th percentile
+}
+
+# Apply the function to each row of the data frame (containing house count) and store the results
+loss.PEISVII.95p <- setNames(data.frame(apply(final.distrib, 1, calculate_percentile)), "PEIS VII loss")
+
+# Save file
+save(loss.PEISVII.95p, file = "PEIS VII loss at 95p.RData")
+
+```
+
+
+```{r Step 2.2 - Determine direct loss for a hazard - PEIS VIII}
+
+# Calculate losses for PEIS VIII at 95th percentile of the resulting distribution.
+
+install.packages("triangle")
+library(triangle)
+
+function.LWA <- function() {
+  n_sim <- 10000
+  LWA.cost <- rtriangle(n_sim, a = 0.9*8407.29, b = 1.1*8407.29, c = 8407.29) 
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  LWA.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim) 
+  LWA.loss <- rtriangle (n_sim, a = 0.3212, b = 0.9014, c = 0.6655) 
+  LWA.cost*LWA.area*LWA.loss
+}
+
+function.LWB <- function() {
+  n_sim <- 10000
+  LWB.cost <- rtriangle(n_sim, a = 0.9*10328.43, b = 1.1*10328.43, c = 10328.43)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  LWB.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  LWB.loss <- rtriangle(n_sim, a = 0.2038, b = 0.8854, c = 0.5572)
+  LWB.cost*LWB.area*LWB.loss
+}
+
+function.SCA <- function() {
+  n_sim <- 10000
+  SCA.cost <- rtriangle(n_sim, a = 0.9*12055.57, b = 1.1*12055.57, c = 12055.57)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  SCA.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  SCA.loss <- rtriangle(n_sim, a = 0.2136, b = 0.8890, c = 0.5665)
+  SCA.cost*SCA.area*SCA.loss
+}
+
+function.SCB <- function() {
+  n_sim <- 10000
+  SCB.cost <- rtriangle(n_sim, a = 0.9*17935.86, b = 1.1*17935.86, c = 17935.86)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  SCB.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  SCB.loss <- rtriangle(n_sim, a = 0.2791, b = 0.8951, c = 0.6361)
+  SCB.cost*SCB.area*SCB.loss
+}
+
+function.RCA <- function() {
+  n_sim <- 10000
+  RCA.cost <- rtriangle(n_sim, a = 0.9*19363.57, b = 1.1*19363.57, c = 19363.57)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  RCA.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  RCA.loss <- rtriangle(n_sim, a = 0.1537, b = 0.8781, c = 0.5009)
+  RCA.cost*RCA.area*RCA.loss
+}
+
+function.RCB <- function() {
+  n_sim <- 10000
+  RCB.cost <- rtriangle(n_sim, a = 0.9*25182.71, b = 1.1*25182.71, c = 25182.71)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  RCB.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  RCB.loss <- rtriangle(n_sim, a = 0.2519, b = 0.8843, c = 0.6078)
+  RCB.cost*RCB.area*RCB.loss
+}
+
+# Function to calculate the direct loss and return the 95th percentile
+calculate_percentile <- function(row) {
+  set.seed(1) # for comparability across scenarios
+  direct.loss <- (rowSums(replicate(n=row["LWA"], function.LWA()))) +
+                 (rowSums(replicate(n=row["LWB"], function.LWB()))) +
+                 (rowSums(replicate(n=row["SCA"], function.SCA()))) +
+                 (rowSums(replicate(n=row["SCB"], function.SCB()))) +
+                 (rowSums(replicate(n=row["RCA"], function.RCA()))) +
+                 (rowSums(replicate(n=row["RCB"], function.RCB())))
+  quantile(direct.loss, probs = 0.95) # Specify 95th percentile
+}
+
+# Apply the function to each row of the data frame (containing house count) and store the results
+loss.PEISVIII.95p <- setNames(data.frame(apply(final.distrib, 1, calculate_percentile)), "PEIS VIII loss")
+
+# Save file
+save(loss.PEISVIII.95p, file = "PEIS VIII loss at 95p.RData")
+
+```
+
+
+```{r - Step 2.3 Determine direct loss for a hazard - 270 km/h}
+
+# Calculate losses for 270 km/h at 95th percentile of the resulting distribution.
+
+install.packages("triangle")
+library(triangle)
+
+function.LWA <- function() {
+  n_sim <- 10000
+  LWA.cost <- rtriangle(n_sim, a = 0.9*8407.29, b = 1.1*8407.29, c = 8407.29) 
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  LWA.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim) 
+  LWA.loss <- rtriangle (n_sim, a = 0.5644, b = 0.9736, c = 0.8665) # +/-50km/h
+  LWA.cost*LWA.area*LWA.loss
+}
+
+function.LWB <- function() {
+  n_sim <- 10000
+  LWB.cost <- rtriangle(n_sim, a = 0.9*10328.43, b = 1.1*10328.43, c = 10328.43)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  LWB.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  LWB.loss <- rtriangle(n_sim, a = 0.5103, b = 0.9703, c = 0.8452)
+  LWB.cost*LWB.area*LWB.loss
+}
+
+function.SCA <- function() {
+  n_sim <- 10000
+  SCA.cost <- rtriangle(n_sim, a = 0.9*12055.57, b = 1.1*12055.57, c = 12055.57)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  SCA.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  SCA.loss <- rtriangle(n_sim, a = 0.3774, b = 0.9286, c = 0.7334)
+  SCA.cost*SCA.area*SCA.loss
+}
+
+function.SCB <- function() {
+  n_sim <- 10000
+  SCB.cost <- rtriangle(n_sim, a = 0.9*17935.86, b = 1.1*17935.86, c = 17935.86)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  SCB.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  SCB.loss <- rtriangle(n_sim, a = 0.2424, b = 0.9055, c = 0.6379)
+  SCB.cost*SCB.area*SCB.loss
+}
+
+function.RCA <- function() {
+  n_sim <- 10000
+  RCA.cost <- rtriangle(n_sim, a = 0.9*19363.57, b = 1.1*19363.57, c = 19363.57)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  RCA.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  RCA.loss <- rtriangle(n_sim, a = 0.1373, b = 0.8980, c = 0.5443)
+  RCA.cost*RCA.area*RCA.loss
+}
+
+function.RCB <- function() {
+  n_sim <- 10000
+  RCB.cost <- rtriangle(n_sim, a = 0.9*25182.71, b = 1.1*25182.71, c = 25182.71)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  RCB.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  RCB.loss <- rtriangle(n_sim, a = 0.0016, b = 0.2443, c = 0.0333)
+  RCB.cost*RCB.area*RCB.loss
+}
+
+# Function to calculate the direct loss and return the 95th percentile
+calculate_percentile <- function(row) {
+  set.seed(1) # for comparability across scenarios
+  direct.loss <- (rowSums(replicate(n=row["LWA"], function.LWA()))) +
+                 (rowSums(replicate(n=row["LWB"], function.LWB()))) +
+                 (rowSums(replicate(n=row["SCA"], function.SCA()))) +
+                 (rowSums(replicate(n=row["SCB"], function.SCB()))) +
+                 (rowSums(replicate(n=row["RCA"], function.RCA()))) +
+                 (rowSums(replicate(n=row["RCB"], function.RCB())))
+  quantile(direct.loss, probs = 0.95) # Specify 95th percentile
+}
+
+# Apply the function to each row of the data frame (containing house count) and store the results
+loss.270kph.95p <- setNames(data.frame(apply(final.distrib, 1, calculate_percentile)), "270 kph loss")
+
+# Save file
+save(loss.270kph.95p, file = "270 kph loss at 95p.RData")
+
+```
+
+
+```{r - Step 2.4 Determine direct loss for a hazard - 300 km/h}
+
+# Calculate losses for 300 km/h at 95th percentile of the resulting distribution.
+
+install.packages("triangle")
+library(triangle)
+
+function.LWA <- function() {
+  n_sim <- 10000
+  LWA.cost <- rtriangle(n_sim, a = 0.9*8407.29, b = 1.1*8407.29, c = 8407.29) 
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  LWA.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim) 
+  LWA.loss <- rtriangle (n_sim, a = 0.7721, b = 0.9914, c = 0.9473) # +/-50km/h
+  LWA.cost*LWA.area*LWA.loss
+}
+
+function.LWB <- function() {
+  n_sim <- 10000
+  LWB.cost <- rtriangle(n_sim, a = 0.9*10328.43, b = 1.1*10328.43, c = 10328.43)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  LWB.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  LWB.loss <- rtriangle(n_sim, a = 0.7372, b = 0.9907, c = 0.9396)
+  LWB.cost*LWB.area*LWB.loss
+}
+
+function.SCA <- function() {
+  n_sim <- 10000
+  SCA.cost <- rtriangle(n_sim, a = 0.9*12055.57, b = 1.1*12055.57, c = 12055.57)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  SCA.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  SCA.loss <- rtriangle(n_sim, a = 0.6021, b = 0.9729, c = 0.8730)
+  SCA.cost*SCA.area*SCA.loss
+}
+
+function.SCB <- function() {
+  n_sim <- 10000
+  SCB.cost <- rtriangle(n_sim, a = 0.9*17935.86, b = 1.1*17935.86, c = 17935.86)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  SCB.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  SCB.loss <- rtriangle(n_sim, a = 0.4759, b = 0.9669, c = 0.8271)
+  SCB.cost*SCB.area*SCB.loss
+}
+
+function.RCA <- function() {
+  n_sim <- 10000
+  RCA.cost <- rtriangle(n_sim, a = 0.9*19363.57, b = 1.1*19363.57, c = 19363.57)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  RCA.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  RCA.loss <- rtriangle(n_sim, a = 0.3538, b = 0.9720, c = 0.7938)
+  RCA.cost*RCA.area*RCA.loss
+}
+
+function.RCB <- function() {
+  n_sim <- 10000
+  RCB.cost <- rtriangle(n_sim, a = 0.9*25182.71, b = 1.1*25182.71, c = 25182.71)
+  random.area <- rlnorm(10500, meanlog = 3.63, sdlog = 0.81) 
+  RCB.area <- head(random.area[random.area >= 5 & random.area <= 200], n_sim)
+  RCB.loss <- rtriangle(n_sim, a = 0.0123, b = 0.5119, c = 0.1203)
+  RCB.cost*RCB.area*RCB.loss
+}
+
+# Function to calculate the direct loss and return the 95th percentile
+calculate_percentile <- function(row) {
+  set.seed(1) # for comparability across scenarios
+  direct.loss <- (rowSums(replicate(n=row["LWA"], function.LWA()))) +
+                 (rowSums(replicate(n=row["LWB"], function.LWB()))) +
+                 (rowSums(replicate(n=row["SCA"], function.SCA()))) +
+                 (rowSums(replicate(n=row["SCB"], function.SCB()))) +
+                 (rowSums(replicate(n=row["RCA"], function.RCA()))) +
+                 (rowSums(replicate(n=row["RCB"], function.RCB())))
+  quantile(direct.loss, probs = 0.95) # Specify 95th percentile
+}
+
+# Apply the function to each row of the data frame (containing house count) and store the results
+loss.300kph.95p <- setNames(data.frame(apply(final.distrib, 1, calculate_percentile)), "300 kph loss")
+
+# Save file
+save(loss.300kph.95p, file = "300 kph loss at 95p.RData")
+
+```
+
+
+```{r Step 3 Determine Pareto optimal solutions}
+
+# Note: Determine a pair of wind and seismic intensities to analyse.
+
+# Identified pairs of intensities for analyses:
+df.optimal.1 <- cbind(loss.PEISVII.95p, loss.270kph.95p) #Case 1
+df.optimal.2 <- cbind(loss.PEISVIII.95p, loss.300kph.95p) # Case 2
+
+# Function to check non-dominated solutions or the Pareto optimal solutions
+library(rPref)
+pareto.solutions.1 <- psel(df.optimal.1, low(`PEIS VII loss`)*low(`270 kph loss`)) # Case 1
+pareto.solutions.2 <- psel(df.optimal.2, low(`PEIS VIII loss`)*low(`300 kph loss`)) # Case 2
+
+
+# Printing specific rows to consult distribution percentages
+# Example
+specific_row <- distrib.percent[5441, ]
+print(specific_row)
+
+```
+
+
+```{r Step 4 Ranking Pareto optimal solutions}
+
+library(dplyr)
+library(purrr)
+library(tidyr)
+
+# Use the data set containing the set of Pareto optimal solutions
+
+# STEP 1
+# Identify the objectives (M) and Pareto optimal solutions (N)
+M <- 2 # Number of objectives
+
+# STEP 3
+# Rank Pareto optimal solutions (e.g., lowest monetary loss to highest monetary loss)
+pareto.ranks <- data.frame(apply(pareto.solutions.1, 2, rank)) # Change data set depending on the Case (Case 1 or Case 2)
+
+# STEP 2
+# Assign rank to objectives based on their importance
+obj.ranks <- 1:M 
+# However, we use the mean of the rank values for both since we assume that both objectives are of equal importance.
+mean.obj.ranks <- mean(obj.ranks)
+obj.ranks <- rep(mean.obj.ranks,length(obj.ranks))
+
+# STEP 4
+# Calculate "weights of ranks" for objectives (*based on cumulative reciprocals)
+obj.ranks.weighted <- 1 / cumsum(1 / sort(obj.ranks))
+# Since we assume that both objectives are of equal importance, we use the mean for both.
+mean.obj.ranks.weighted <- mean(obj.ranks.weighted)
+obj.ranks.weighted <- rep(mean.obj.ranks.weighted, length(obj.ranks.weighted))
+
+# Calculate "weights of ranks" of the Pareto optimal solutions for each objective (*based on cumulative reciprocals)
+pareto.ranks.weighted <- pareto.ranks %>%
+  mutate(across(everything(), function(z) {
+    as.numeric(map(z, ~1/sum(1/1:.x)))
+  }))
+
+# Calculate the sum of the "weights of ranks" for objectives
+sum.obj.ranks.weighted <- sum(obj.ranks.weighted)
+
+# Calculate the sum of the "weights of ranks" of the Pareto optimal solutions for each objective
+sum.pareto.ranks.weighted <- colSums(pareto.ranks.weighted)
+print(sum.pareto.ranks.weighted)
+
+# Calculate the "final weights" = "weights of ranks" / sum of the "weights of ranks"
+# for objectives
+final.obj.weights <- t(as.data.frame(obj.ranks.weighted/sum.obj.ranks.weighted))
+
+#for Pareto solutions
+final.pareto.weights <- pareto.ranks.weighted/sum.pareto.ranks.weighted
+
+# STEP 5
+# Derive composite scores
+composite.score <- (final.obj.weights * final.pareto.weights)
+composite.score$"composite score" <- rowSums(composite.score)
+
+
+# Identify the top 3 highest values of composite scores
+top.values <- sort(unique(composite.score$"composite score"), decreasing = TRUE)[1:3]
+
+# Extract rows of the highest values for composite scores
+top.rows <- composite.score[composite.score$"composite score" %in% top.values, ]
+
+# Print the resulting rows/values
+print(top.rows)
+print(top.values)
+
+```
+
+
+```{r Miscellaneous: Consulting percentages and distribution specific to a certain row}
+
+# Consulting distribution of building stock for a specific scenario
+distrib.percent[11167, ]
+
+```
+
+
+```{r Miscellaneous: Plotting the Pareto graph for Case 1}
+
+# Load necessary library for plotting
+library(ggplot2)
+library(scales)
+
+# Plot Pareto optimal curve for Case 1
+case1.plot <- ggplot(df.optimal.1, aes(x = `PEIS VII loss`, y = `270 kph loss`)) +
+  geom_point(color = "darkgrey", size = 0.00001) +    # Plot points
+  geom_point(aes(x = 198683889, y = 382339570), color = "red", size = 1) +  # Highlight baseline (Scenario 3824)
+  geom_point(aes(x = 250697562, y = 268818308), color = "darkgreen", size = 1) +  # Highlight Pareto midpoint (Scenario 10837) 
+  geom_point(aes(x = 330643889, y = 194809277), color = "orange", size = 1) +  # Highlight top-rank Pareto (Scenario 11628)
+  geom_point(aes(x = 161719217, y = 385296870), color = "blue", size = 1) +  # Highlight top-rank Pareto (Scenario 15)
+  geom_point(aes(x = 307816417, y = 296378647), color = "purple", size = 1) +  # Highlight most unfeasible (Scenario 11432)
+  geom_point(aes(x = 191440238, y = 330220789), color = "brown", size = 1) +  # Highlight alternative solution (Scenario 5444)
+  labs(x = "Seismic losses at PEIS VII (in PHP)", y = "Wind losses at 270 km/h (in PHP)") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_x_continuous(labels = scales::label_number(scale_cut = scales::cut_short_scale())) +  # Short scale format for x-axis
+  scale_y_continuous(labels = scales::label_number(scale_cut = scales::cut_short_scale())) +  # Short scale format for y-axis
+  theme_minimal(base_size = 11.5, base_family = "Helvetica") +
+  theme(axis.title = element_text(size = 10)) +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+        axis.line = element_line(size = 0.3, linetype = "solid",
+                                   colour = "black"),
+        axis.ticks = element_line(linetype = "solid"))
+
+# Print
+print(case1.plot)
+
+# Save image
+ggsave("Case 1 Pareto curve.png", case1.plot, width = 6, height = 4, dpi = 200)
+
+```
+
+
+```{r Miscellaneous: Plotting the Pareto graph for Case 2}
+
+# Plot Pareto optimal curve for Case 2
+case2.plot <- ggplot(df.optimal.2, aes(x = `PEIS VIII loss`, y = `300 kph loss`)) +
+  geom_point(color = "darkgrey", size = 0.00001) +    # Plot points
+  geom_point(aes(x = 385567587, y = 473658577), color = "red", size = 1) +  # Highlight baseline (Scenario 3824)
+  geom_point(aes(x = 379581182, y = 387564025), color = "darkgreen", size = 1) +  # Highlight Pareto midpoint (Scenario 7261)
+  geom_point(aes(x = 629185361, y = 331094944), color = "orange", size = 1) +  # Highlight top-rank Pareto (Scenario 11628)
+  geom_point(aes(x = 310680271, y = 403105449), color = "blue", size = 1) +  # Highlight top-rank Pareto (Scenario 1)
+  geom_point(aes(x = 529300603, y = 528750927), color = "purple", size = 1) +  # Highlight most unfeasible (Scenario 9416)
+  geom_point(aes(x = 333613205, y = 397793439), color = "brown", size = 1) +  # Highlight alternative solution (Scenario 3061)
+  labs(x = "Seismic losses  at PEIS VIII (in PHP)", y = "Wind losses at 300 km/h (in PHP)") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_x_continuous(labels = scales::label_number(scale_cut = scales::cut_short_scale())) +  # Short scale format for x-axis
+  scale_y_continuous(labels = scales::label_number(scale_cut = scales::cut_short_scale())) +   # Short scale format for y-axis
+  theme_minimal(base_size = 11.5, base_family = "Helvetica") +
+  theme(axis.title = element_text(size = 10)) +
+  theme(panel.border = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+        axis.line = element_line(size = 0.3, linetype = "solid",
+                                   colour = "black"),
+        axis.ticks = element_line(linetype = "solid"))
+
+# Print
+print(case2.plot)
+
+# Save image
+ggsave("Case 2 Pareto curve.png", case2.plot, width = 6, height = 4, dpi = 200)
+
+```
