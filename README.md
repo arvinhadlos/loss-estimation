@@ -1,7 +1,7 @@
 # loss-estimation
 This repository contains the R code used in the following study: 
 
-"Multi-hazard optimisation of a heterogeneous housing stock against wind and seismic losses: A case study application in the Philippines"
+"Optimising housing typology distributions for multi-hazard loss reductions in resource-constrained settings"
 
 Arvin Hadlos, Aaron Opdyke, S.Ali Hadigheh
 School of Civil Engineering, The University of Sydney
